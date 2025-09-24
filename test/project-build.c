@@ -1,27 +1,6 @@
 #define NOB_IMPLEMENTATION
 #include "nob.h"
 
-static const char *debug_opt = "--debug";
-static const char *addres_san_opt = "--addr-sanitize";
-static bool is_debug = false;
-static bool addres_sanitizer = false;
-
-static inline bool file_exists(const char *path)
-{
-    return access(path, F_OK) == 0;
-}
-
-enum build_type {
-    DEBUG,
-    ADDR_SANITIZER
-};
-
-typedef struct
-{
-    bool debug;
-    bool address_sanitizer;
-} scenario;
-
 int main(int argc, char **argv)
 {
     NOB_GO_REBUILD_URSELF(argc, argv);
@@ -45,11 +24,3 @@ int main(int argc, char **argv)
     if (!nob_cmd_run(&cmd)) return 1;
     return 0;
 }
-// if (is_debug) {
-//     nob_cmd_append(&cmd, "cc", "-Wall", "-Wextra", "-Wpedantic", "-o", "build/bin/server-client-test", "-lpthread", "-ggdb", "-g3", "-lrt", "-Iinclude", "test/server-client-test.c");
-// } else if (addres_sanitizer) {
-//     nob_cmd_append(&cmd, "cc", "-Wall", "-Wextra", "-Wpedantic", "-fsanitize=address", "-o", "build/bin/server-client-test", "-lpthread", "-lrt", "-Iinclude", "test/server-client-test.c");
-// } else {
-//     nob_cmd_append(&cmd, "cc", "-Wall", "-Wextra", "-Wpedantic", "-o", "build/bin/server-client-test", "-lpthread", "-lrt", "-Iinclude", "test/server-client-test.c");
-// }
-// if (!nob_cmd_run(&cmd)) return 1;

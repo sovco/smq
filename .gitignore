@@ -19,5 +19,5 @@
 !test/*/*/*.h
 !test/*/*/*.cpp
 !test/*/*/*.c
-test/nob.c
+test/nob.h
 !.clang-format
