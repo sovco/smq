@@ -83,10 +83,6 @@ static inline int __smq_channel_send(const smq_channel *channel, const char *dat
 static inline int smq_channel_blocking_send(const smq_channel *channel, const char *data, const size_t size, int priority);
 static inline int smq_channel_timed_send(const smq_channel *channel, const char *data, const size_t size, int priority, long timeout);
 
-static inline smq_message *smq_message_compose(uint32_t clientid, uint8_t status, uint8_t isresponse, char *payloadstr);
-static inline smq_message smq_message_parse(char *data);
-static inline smq_message *smq_empty_message_compose();
-
 static inline int smq_client_create(smq_client *client, uint16_t id, const char *path);
 #define smq_client_request(client, request, response, ...) \
     __smq_client_request(client, request, response, (smq_channel_transmission_options){ .blocking = true, .timeoutms = 0, .priority = 0, __VA_ARGS__ })
@@ -184,35 +180,6 @@ static inline int smq_channel_timed_listen(const smq_channel *channel, char *dat
     ret = (int)mq_timedreceive(channel->desc, (void *)data, size + 1, NULL, &abstimeout);
     ret == -1 ? ret = -errno : ret;
     return ret;
-}
-
-static inline smq_message smq_message_parse(char *data)
-{
-    smq_message msg;
-    memcpy(&msg, data, SMQ_MAX_MSG_SIZE);
-    return msg;
-}
-
-static inline smq_message *smq_message_compose(uint32_t clientid, uint8_t status, uint8_t isresponse, char *payloadstr)
-{
-    smq_message *message = malloc(sizeof(*message));
-    message->header.clientid = (uint16_t)clientid;
-    message->header.status = status;
-    message->header.isresponse = isresponse;
-    memcpy(&message->payload, payloadstr, strlen(payloadstr));
-    return message;
-}
-
-static inline smq_message *smq_empty_message_compose()
-{
-    smq_message *message = malloc(sizeof(*message));
-    *message = (smq_message){
-        { .clientid = 0,
-          .status = 0,
-          .isresponse = SMQ_STATUS_REQUEST },
-        .payload = ""
-    };
-    return message;
 }
 
 static inline int __smq_client_request(const smq_client *client, smq_message *request, smq_message *response, smq_channel_transmission_options options)
@@ -333,7 +300,6 @@ static inline void __smq_listener_proc(smq_server_listener *listener)
             switch (listen_res) {
             case -ETIMEDOUT: {
                 continue;
-                break;
             }
             }
         }
@@ -344,7 +310,6 @@ static inline void __smq_listener_proc(smq_server_listener *listener)
                 switch (send_res) {
                 case -ETIMEDOUT: {
                     continue;
-                    break;
                 }
                 }
             }
@@ -379,8 +344,8 @@ static inline void smq_server_start(smq_server *server)
             lsner->subpid = subpid;
             if (setpgid(subpid, server->listeners->subpid) != 0) {
                 puts("smq_server_start() could not set gpid");
+                exit(EXIT_FAILURE);
             }
-            continue;
         }
     }
 }
