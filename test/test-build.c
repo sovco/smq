@@ -1,6 +1,11 @@
 #define NOB_IMPLEMENTATION
 #include "nob.h"
 
+static inline bool file_exists(const char *path)
+{
+    return access(path, F_OK) == 0;
+}
+
 int main(int argc, char **argv)
 {
     NOB_GO_REBUILD_URSELF(argc, argv);
