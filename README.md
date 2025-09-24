@@ -8,6 +8,7 @@ What is missing?
 1) Error handling on numerous occasions (too many clients, message que full and etc)
 2) A good way to form a message (smq_message)
 3) Lacking in testing
+4) Server uses fork instead of threads to handle requests of different paths (pthreads will be used in the future and smq_server_start will be blocking) 
 
 # Building and Running Tests
 
