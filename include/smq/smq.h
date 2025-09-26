@@ -54,6 +54,7 @@ typedef struct
     void (*handler)(smq_message *request, smq_message *response);
     struct smq_server_listener *next;
     pid_t subpid;
+    pthread_t thread;
 } smq_server_listener;
 
 typedef struct
