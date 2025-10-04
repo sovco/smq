@@ -98,7 +98,6 @@ STF_TEST_CASE(smq_channel_transmission, timed_listen_test)
     smq_channel_destroy(&channel);
 }
 
-
 int main(void)
 {
     return STF_RUN_TESTS();
