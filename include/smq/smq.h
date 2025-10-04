@@ -12,8 +12,13 @@
 #define SMQ_MAX_MSG_COUNT 10// Get this from /proc/sys/fs/mqueue/msg_default
 #endif// SMQ_MAX_MSG_COUNT
 
-#define SMQ_STATUS_REQUEST 0x00
-#define SMQ_STATUS_RESPONSE 0xFF
+#if __STDC_VERSION__ > 201112L || __STDC_NO_ATOMICS__ == 0
+#define SMQ_HAS_ATOMICS
+#endif
+
+#ifdef SMQ_HAS_ATOMICS
+#include <stdatomic.h>
+#endif// SMQ_HAS_ATOMICS
 
 typedef struct
 {
@@ -27,10 +32,12 @@ typedef struct
 
 typedef struct
 {
-    long timeoutms;
+    long timeout_ms;
     unsigned int priority;
-    bool blocking;
 } smq_channel_transmission_options;
+
+#define SMQ_STATUS_REQUEST 0x0F
+#define SMQ_STATUS_RESPONSE 0xF0
 
 typedef struct
 {
@@ -48,20 +55,33 @@ typedef struct
     char payload[SMQ_PAYLOAD_SIZE];
 } smq_message;
 
-typedef struct
+typedef struct smq_server_t smq_server;
+typedef struct smq_server_listener_t smq_server_listener;
+
+struct smq_server_listener_t
 {
     smq_channel channel;
     void (*handler)(smq_message *request, smq_message *response);
     struct smq_server_listener *next;
-    pid_t subpid;
+    smq_server *parent_server;
     pthread_t thread;
-} smq_server_listener;
+#ifdef SMQ_HAS_ATOMICS
+    atomic_bool is_listening;
+#else
+    bool is_listening;
+#endif
+};
 
-typedef struct
+struct smq_server_t
 {
     smq_server_listener *listeners;
     char name[255];
-} smq_server;
+#ifdef SMQ_HAS_ATOMICS
+    atomic_bool running;
+#else
+    bool running;
+#endif
+};
 
 typedef struct
 {
@@ -74,19 +94,19 @@ static inline void smq_channel_close(const smq_channel *channel);
 static inline void smq_channel_destroy(const smq_channel *channel);
 
 #define smq_channel_listen(channel, data, size, ...) \
-    __smq_channel_listen(channel, data, size, (smq_channel_transmission_options){ .blocking = true, .timeoutms = 0, .priority = 0, __VA_ARGS__ })
+    __smq_channel_listen(channel, data, size, (smq_channel_transmission_options){ __VA_ARGS__ })
 static inline int __smq_channel_listen(const smq_channel *channel, char *data, const size_t size, smq_channel_transmission_options options);
 static inline int smq_channel_blocking_listen(const smq_channel *channel, char *data, const size_t size);
 static inline int smq_channel_timed_listen(const smq_channel *channel, char *data, const size_t size, long timeout);
 #define smq_channel_send(channel, data, size, ...) \
-    __smq_channel_send(channel, data, size, (smq_channel_transmission_options){ .blocking = true, .timeoutms = 0, .priority = 0, __VA_ARGS__ })
+    __smq_channel_send(channel, data, size, (smq_channel_transmission_options){ __VA_ARGS__ })
 static inline int __smq_channel_send(const smq_channel *channel, const char *data, const size_t size, const smq_channel_transmission_options options);
 static inline int smq_channel_blocking_send(const smq_channel *channel, const char *data, const size_t size, int priority);
 static inline int smq_channel_timed_send(const smq_channel *channel, const char *data, const size_t size, int priority, long timeout);
 
 static inline int smq_client_create(smq_client *client, uint16_t id, const char *path);
 #define smq_client_request(client, request, response, ...) \
-    __smq_client_request(client, request, response, (smq_channel_transmission_options){ .blocking = true, .timeoutms = 0, .priority = 0, __VA_ARGS__ })
+    __smq_client_request(client, request, response, (smq_channel_transmission_options){ __VA_ARGS__ })
 static inline int __smq_client_request(const smq_client *client, smq_message *request, smq_message *response, smq_channel_transmission_options options);
 static inline int smq_client_blocking_request(const smq_client *client, smq_message *request, smq_message *response, const int priority);
 static inline int smq_client_timed_request(const smq_client *client, smq_message *request, smq_message *response, const int priority, const long timeout_ms);
@@ -94,9 +114,12 @@ static inline void smq_client_destroy(const smq_client *client);
 
 static inline void smq_server_create(smq_server *server, const char *name);
 static inline int smq_server_add_listener(smq_server *server, const char *path, void (*handler)(smq_message *request, smq_message *response));
+static inline bool smq_server_is_running(smq_server *server);
 static inline void smq_server_start(smq_server *server);
+static inline int smq_server_start_non_blocking(pthread_t *thread, smq_server *server);
+static inline bool smq_server_ready(smq_server *server, long timeout_ms);
+static inline void smq_server_stop(smq_server *server);
 static inline void smq_server_destroy(smq_server *server);
-static inline void __smq_listener_proc(smq_server_listener *listener);
 
 static inline long smq_timestamp_ms();
 static inline long smq_timespec_to_timestamp_ms(struct timespec *time);
@@ -113,6 +136,8 @@ static inline struct timespec smq_time_now();
 #include <signal.h>
 #include <stdbool.h>
 #include <time.h>
+#include <sched.h>
+#include <pthread.h>
 
 static inline int smq_channel_create(smq_channel *channel)
 {
@@ -138,10 +163,7 @@ static inline void smq_channel_destroy(const smq_channel *channel)
 
 static inline int __smq_channel_send(const smq_channel *channel, const char *data, const size_t size, smq_channel_transmission_options options)
 {
-    if (options.blocking) {
-        return smq_channel_blocking_send(channel, data, size, options.priority);
-    }
-    return smq_channel_timed_send(channel, data, size, options.priority, options.timeoutms);
+    return options.timeout_ms > 0 ? smq_channel_timed_send(channel, data, size, options.priority, options.timeout_ms) : smq_channel_blocking_send(channel, data, size, options.priority);
 }
 
 static inline int smq_channel_blocking_send(const smq_channel *channel, const char *data, const size_t size, int priority)
@@ -163,7 +185,7 @@ static inline int smq_channel_timed_send(const smq_channel *channel, const char 
 
 static inline int __smq_channel_listen(const smq_channel *channel, char *data, const size_t size, smq_channel_transmission_options options)
 {
-    return options.blocking ? smq_channel_blocking_listen(channel, data, size) : smq_channel_timed_listen(channel, data, size, options.timeoutms);
+    return options.timeout_ms > 0 ? smq_channel_timed_listen(channel, data, size, options.timeout_ms) : smq_channel_blocking_listen(channel, data, size);
 }
 
 static inline int smq_channel_blocking_listen(const smq_channel *channel, char *data, const size_t size)
@@ -185,10 +207,7 @@ static inline int smq_channel_timed_listen(const smq_channel *channel, char *dat
 
 static inline int __smq_client_request(const smq_client *client, smq_message *request, smq_message *response, smq_channel_transmission_options options)
 {
-    if (options.blocking) {
-        return smq_client_blocking_request(client, request, response, options.priority);
-    }
-    return smq_client_timed_request(client, request, response, options.priority, options.timeoutms);
+    return options.timeout_ms > 0 ? smq_client_timed_request(client, request, response, options.priority, options.timeout_ms) : smq_client_blocking_request(client, request, response, options.priority);
 }
 
 static inline int smq_client_blocking_request(const smq_client *client, smq_message *request, smq_message *response, const int priority)
@@ -257,9 +276,14 @@ static inline void smq_server_create(smq_server *server, const char *name)
         .listeners = NULL
     };
     memcpy(&server->name, name, strlen(name) + 1);
+#ifdef SMQ_HAS_ATOMICS
+    atomic_init(&server->running, false);
+#else
+    server->running = false;
+#endif
 }
 
-smq_server_listener **smq_server_get_last_listener(smq_server_listener **listeners)
+static inline smq_server_listener **smq_server_get_last_listener(smq_server_listener **listeners)
 {
     smq_server_listener **tmp = listeners;
     while (*tmp != NULL) {
@@ -281,44 +305,74 @@ static inline int smq_server_add_listener(smq_server *server, const char *path, 
           .oflag = O_RDWR | O_CREAT },
         .handler = handler,
         .next = NULL,
-        .subpid = 0
+        .thread = 0,
+        .parent_server = server,
+        .is_listening = false
     };
     memcpy(&(*new_listener)->channel.path, server->name, strlen(server->name));
     memcpy(&(*new_listener)->channel.path[strlen(server->name)], path, strlen(path) + 1);
     return smq_channel_create(&(*new_listener)->channel);
 }
 
-static inline void __smq_listener_proc(smq_server_listener *listener)
+
+static inline bool __smq_server_listener_is_ready(smq_server_listener *listener)
 {
-    static const long timeout_ms = 1500;
+    bool res = false;
+#ifdef SMQ_HAS_ATOMICS
+    res = atomic_load(&listener->is_listening);
+#else
+    pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+    pthread_mutex_lock(&mutex);
+    res = listener->is_listening;
+    pthread_mutex_unlock(&mutex);
+#endif
+    return res;
+}
+
+static inline void __smq_server_listener_modify_readiness(smq_server_listener *listener, bool new_state)
+{
+#ifdef SMQ_HAS_ATOMICS
+    atomic_store(&listener->is_listening, new_state);
+#else
+    pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+    pthread_mutex_lock(&mutex);
+    listener->is_listening = new_state;
+    pthread_mutex_unlock(&mutex);
+#endif
+}
+
+static inline void *__smq_listener_proc(void *listener_)
+{
+    static const long timeout_ms = 700;
     int listen_res = 0;
     int send_res = 0;
-    smq_message msgresp = { 0 };
-    smq_message msgrecv = { 0 };
-
-    while (true) {
-        if ((listen_res = smq_channel_timed_listen(&listener->channel, (char *)&msgrecv, sizeof(msgrecv), timeout_ms)) < 0) {
+    smq_message *msgresp = malloc(sizeof(*msgresp));
+    smq_message *msgrecv = malloc(sizeof(*msgrecv));
+    smq_server_listener *listener = (smq_server_listener *)listener_;
+    __smq_server_listener_modify_readiness(listener, true);
+    while (smq_server_is_running(listener->parent_server)) {
+        if ((listen_res = smq_channel_timed_listen(&listener->channel, (char *)msgrecv, sizeof(*msgrecv), timeout_ms)) < 0) {
             switch (listen_res) {
             case -ETIMEDOUT: {
                 continue;
             }
             }
         }
-        if (msgrecv.header.isresponse == SMQ_STATUS_REQUEST) {
-            listener->handler(&msgrecv, &msgresp);
-            msgresp.header.isresponse = SMQ_STATUS_RESPONSE;
-            while ((send_res = smq_channel_timed_send(&listener->channel, (char *)&msgresp, sizeof(msgresp), 0, timeout_ms)) < 0) {
+        if (msgrecv->header.isresponse == SMQ_STATUS_REQUEST) {
+            listener->handler(msgrecv, msgresp);
+            msgresp->header.isresponse = SMQ_STATUS_RESPONSE;
+            while ((send_res = smq_channel_timed_send(&listener->channel, (char *)msgresp, sizeof(*msgresp), 0, timeout_ms)) < 0) {
                 switch (send_res) {
                 case -ETIMEDOUT: {
                     continue;
                 }
                 }
             }
-            memset(&msgrecv, 0x00, sizeof(msgrecv));
-            memset(&msgresp, 0x00, sizeof(msgresp));
+            memset(msgrecv, 0x00, sizeof(*msgrecv));
+            memset(msgresp, 0x00, sizeof(*msgresp));
             continue;
         }
-        while ((send_res = smq_channel_timed_send(&listener->channel, (char *)&msgrecv, sizeof(msgrecv), 0, timeout_ms)) < 0) {
+        while ((send_res = smq_channel_timed_send(&listener->channel, (char *)msgrecv, sizeof(*msgrecv), 0, timeout_ms)) < 0) {
             switch (send_res) {
             case -ETIMEDOUT: {
                 continue;
@@ -326,27 +380,102 @@ static inline void __smq_listener_proc(smq_server_listener *listener)
             }
         }
     }
+    free(msgresp);
+    free(msgrecv);
+    __smq_server_listener_modify_readiness(listener, false);
+    return NULL;
+}
+
+static inline void __smq_server_modify_running_state(smq_server *server, bool new_state)
+{
+#ifdef SMQ_HAS_ATOMICS
+    atomic_store(&server->running, new_state);
+#else
+    pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+    pthread_mutex_lock(&mutex);
+    server->running = new_state;
+    pthread_mutex_unlock(&mutex);
+#endif
+}
+
+static inline bool smq_server_is_running(smq_server *server)
+{
+    bool res = false;
+#ifdef SMQ_HAS_ATOMICS
+    res = atomic_load(&server->running);
+#else
+    pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+    pthread_mutex_lock(&mutex);
+    res = server->running;
+    pthread_mutex_unlock(&mutex);
+#endif
+    return res;
 }
 
 static inline int smq_server_spawn_subprocess(smq_server_listener *listener)
 {
-    int forkres = -1;
-    if ((forkres = fork()) == 0) {
-        __smq_listener_proc(listener);
-    }
-    return forkres;
+    return pthread_create(&listener->thread, NULL, __smq_listener_proc, (void *)listener);
+}
+
+static inline void *__smq_server_run(void *server)
+{
+    smq_server_start((smq_server *)server);
+}
+
+static inline int smq_server_start_non_blocking(pthread_t *thread, smq_server *server)
+{
+    return pthread_create(thread, NULL, __smq_server_run, (void *)server);
 }
 
 static inline void smq_server_start(smq_server *server)
 {
-    int subpid = -1;
+    if (server->listeners == NULL) return;
+    smq_server_listener *first_listener = (smq_server_listener *)server->listeners;
+    if (smq_server_is_running(server) == true) {
+        return;
+    }
+    __smq_server_modify_running_state(server, true);
+    for (smq_server_listener *lsner = (smq_server_listener *)first_listener->next; lsner != NULL; lsner = (smq_server_listener *)lsner->next) {
+        if (smq_server_spawn_subprocess(lsner) != 0) {
+            puts("smq_server_start unable to spawn thread.");
+            return;
+        }
+    }
+    (void)__smq_listener_proc((void *)first_listener);
+}
+
+static inline bool smq_server_ready(smq_server *server, long timeout_ms)
+{
+    long abs_timeout = smq_timestamp_ms() + timeout_ms;
+
     for (smq_server_listener *lsner = server->listeners; lsner != NULL; lsner = (smq_server_listener *)lsner->next) {
-        if ((subpid = smq_server_spawn_subprocess(lsner)) > 0) {
-            lsner->subpid = subpid;
-            if (setpgid(subpid, server->listeners->subpid) != 0) {
-                puts("smq_server_start() could not set gpid");
-                exit(EXIT_FAILURE);
-            }
+        long time_now = smq_timestamp_ms();
+        while (!__smq_server_listener_is_ready(lsner) || abs_timeout > time_now) {
+            time_now = smq_timestamp_ms();
+            sched_yield();
+        }
+        if (time_now > abs_timeout) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static inline void smq_server_stop(smq_server *server)
+{
+    __smq_server_modify_running_state(server, false);
+    if (server->listeners == NULL) return;
+    if (server->listeners->next == NULL) {
+        while (__smq_server_listener_is_ready(server->listeners)) {
+            sched_yield();
+        }
+        return;
+    }
+
+    for (smq_server_listener *lsner = (smq_server_listener *)server->listeners->next; lsner != NULL; lsner = (smq_server_listener *)lsner->next) {
+        if (pthread_join(lsner->thread, NULL) != 0) {
+            puts("smq_server_stop phtread unable to join");
+            return;
         }
     }
 }
@@ -354,7 +483,7 @@ static inline void smq_server_start(smq_server *server)
 static inline void smq_server_destroy(smq_server *server)
 {
     smq_server_listener *lsner = server->listeners;
-    killpg(server->listeners->subpid, SIGKILL);
+    smq_server_stop(server);
     while (lsner != NULL) {
         smq_server_listener *tmp = (smq_server_listener *)lsner->next;
         smq_channel_destroy(&lsner->channel);
