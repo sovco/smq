@@ -446,6 +446,9 @@ static inline void smq_server_start(smq_server *server)
 
 static inline bool smq_server_ready(smq_server *server, long timeout_ms)
 {
+    if (server->listeners == NULL) {
+        return false;
+    }
     long abs_timeout = smq_timestamp_ms() + timeout_ms;
 
     for (smq_server_listener *lsner = server->listeners; lsner != NULL; lsner = (smq_server_listener *)lsner->next) {

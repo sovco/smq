@@ -36,6 +36,27 @@ void client_request(uint16_t id, const char *path, smq_message *response)
     smq_client_destroy(&client);
 }
 
+STF_TEST_CASE(smq_server_client, starting_server_with_no_listeners_exists_immediatelly)
+{
+    smq_server server = { 0 };
+    smq_server_create(&server, "/server");
+    STF_EXPECT(server.listeners == NULL, .failure_msg = "listneres are present", .return_on_failure = true);
+    smq_server_start(&server);
+    STF_EXPECT(smq_server_ready(&server, 500) == false, .failure_msg = "smq_server_ready is supposed to return false on server with no listeners");
+    smq_server_destroy(&server);
+}
+
+STF_TEST_CASE(smq_server_client, starting_server_with_no_listeners_call_on_smq_server_is_running_return_false)
+{
+    smq_server server = { 0 };
+    smq_server_create(&server, "/server");
+    STF_EXPECT(server.listeners == NULL, .failure_msg = "listneres are present", .return_on_failure = true);
+    smq_server_start(&server);
+    STF_EXPECT(smq_server_ready(&server, 500) == false, .failure_msg = "smq_server_ready is supposed to return false on server with no listeners");
+    STF_EXPECT(smq_server_is_running(&server) == false, .failure_msg = "smq_server_is_running is supposed to return false on server with no listeners");
+    smq_server_destroy(&server);
+}
+
 STF_TEST_CASE(smq_server_client, test_single_client_single_request)
 {
     static const char *expected_payload = "Hello!";
@@ -90,6 +111,36 @@ void *request(void *args)
 STF_TEST_CASE(smq_server_client, test_multiple_client_single_request)
 {
     static const size_t client_count = 5;
+    static const char *expected_payload = "Hello!";
+    pthread_t server_handle = 0;
+    pthread_t clients[client_count];
+    smq_message *server_response = NULL;
+    smq_server server = { 0 };
+    smq_server_create(&server, "/server");
+    smq_server_add_listener(&server, "-hello", handler_hello);
+    smq_server_start_non_blocking(&server_handle, &server);
+    for (size_t i = 0; i < client_count; i++) {
+        if (pthread_create(&clients[i], NULL, request, NULL) != 0) {
+            smq_server_destroy(&server);
+            STF_EXPECT(false);
+        }
+    }
+    for (size_t j = 0; j < client_count; j++) {
+        STF_EXPECT(pthread_join(clients[j], (void **)&server_response) == 0);
+        if (server_response != NULL) {
+            STF_EXPECT(strcmp(expected_payload, server_response->payload) == 0);
+            free(server_response);
+            continue;
+        }
+        STF_EXPECT(false, .failure_msg = "server response was NULL");
+    }
+    smq_server_destroy(&server);
+    STF_EXPECT(pthread_join(server_handle, NULL) == 0);
+}
+
+STF_TEST_CASE(smq_server_client, test_20_clients_single_request)
+{
+    static const size_t client_count = 20;
     static const char *expected_payload = "Hello!";
     pthread_t server_handle = 0;
     pthread_t clients[client_count];
