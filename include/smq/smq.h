@@ -3,6 +3,7 @@
 
 #include <mqueue.h>
 #include <stdint.h>
+#include <uuid/uuid.h>
 
 #ifndef SMQ_MAX_MSG_SIZE
 #define SMQ_MAX_MSG_SIZE 8192// Get this from /proc/sys/fs/mqueue/msgsize_default
@@ -91,6 +92,8 @@ typedef struct
 
 static inline int smq_channel_create(smq_channel *channel);
 static inline void smq_channel_close(const smq_channel *channel);
+
+static inline struct mq_attr smq_channel_attributes(mqd_t desc);
 static inline void smq_channel_destroy(const smq_channel *channel);
 
 #define smq_channel_listen(channel, data, size, ...) \
@@ -341,6 +344,14 @@ static inline void __smq_server_listener_modify_readiness(smq_server_listener *l
 #endif
 }
 
+static inline struct mq_attr smq_channel_attributes(mqd_t desc)
+{
+    struct mq_attr channel_attributes = { 0 };
+    mq_getattr(desc, &channel_attributes);
+    return channel_attributes;
+}
+
+
 static inline void *__smq_listener_proc(void *listener_)
 {
     static const long timeout_ms = 700;
@@ -420,6 +431,7 @@ static inline int smq_server_spawn_subprocess(smq_server_listener *listener)
 static inline void *__smq_server_run(void *server)
 {
     smq_server_start((smq_server *)server);
+    return NULL;
 }
 
 static inline int smq_server_start_non_blocking(pthread_t *thread, smq_server *server)
@@ -429,8 +441,8 @@ static inline int smq_server_start_non_blocking(pthread_t *thread, smq_server *s
 
 static inline void smq_server_start(smq_server *server)
 {
-    if (server->listeners == NULL) return;
     smq_server_listener *first_listener = (smq_server_listener *)server->listeners;
+    if (server->listeners == NULL) return;
     if (smq_server_is_running(server) == true) {
         return;
     }
@@ -446,10 +458,10 @@ static inline void smq_server_start(smq_server *server)
 
 static inline bool smq_server_ready(smq_server *server, long timeout_ms)
 {
+    long abs_timeout = smq_timestamp_ms() + timeout_ms;
     if (server->listeners == NULL) {
         return false;
     }
-    long abs_timeout = smq_timestamp_ms() + timeout_ms;
 
     for (smq_server_listener *lsner = server->listeners; lsner != NULL; lsner = (smq_server_listener *)lsner->next) {
         long time_now = smq_timestamp_ms();
@@ -467,11 +479,13 @@ static inline bool smq_server_ready(smq_server *server, long timeout_ms)
 static inline void smq_server_stop(smq_server *server)
 {
     __smq_server_modify_running_state(server, false);
+    printf("after modify running state %d\n", smq_server_is_running(server));
     if (server->listeners == NULL) return;
     if (server->listeners->next == NULL) {
-        while (__smq_server_listener_is_ready(server->listeners)) {
-            sched_yield();
-        }
+        // while (__smq_server_listener_is_ready(server->listeners)) {
+        //     printf("in smq_server_stop");
+        //     sched_yield();
+        // }
         return;
     }
 

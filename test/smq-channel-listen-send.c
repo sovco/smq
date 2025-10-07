@@ -98,6 +98,47 @@ STF_TEST_CASE(smq_channel_transmission, timed_listen_test)
     smq_channel_destroy(&channel);
 }
 
+
+STF_TEST_CASE(smq_channel_transmission, fill_que_with_three_messages_and_track_with_smq_channel_attributes)
+{
+    smq_message msg = { 0 };
+    smq_channel channel = {
+        .maxmsgsize = sizeof(smq_message),
+        .maxmsgcount = 10,
+        .desc = -1,
+        .mode = 0666,
+        .oflag = O_RDWR | O_CREAT,
+        .path = "/test"
+    };
+    STF_EXPECT(smq_channel_create(&channel) != -1, .failure_msg = "smq_channel_create() was not able to get descriptor");
+    STF_EXPECT(smq_channel_blocking_send(&channel, (char *)&msg, sizeof(msg), 0) == 0, .failure_msg = "smq_channel_send failed to send message");
+    STF_EXPECT(smq_channel_blocking_send(&channel, (char *)&msg, sizeof(msg), 0) == 0, .failure_msg = "smq_channel_send failed to send message");
+    STF_EXPECT(smq_channel_blocking_send(&channel, (char *)&msg, sizeof(msg), 0) == 0, .failure_msg = "smq_channel_send failed to send message");
+    STF_EXPECT(smq_channel_attributes(channel.desc).mq_curmsgs == 3, .failure_msg = "expected to have 3 messages in the channel");
+    smq_channel_destroy(&channel);
+}
+
+STF_TEST_CASE(smq_channel_transmission, fill_que_with_three_messages_then_pull_one_message_out_and_track_with_smq_channel_attributes)
+{
+    smq_message msg = { 0 };
+    smq_channel channel = {
+        .maxmsgsize = sizeof(smq_message),
+        .maxmsgcount = 10,
+        .desc = -1,
+        .mode = 0666,
+        .oflag = O_RDWR | O_CREAT,
+        .path = "/test"
+    };
+    STF_EXPECT(smq_channel_create(&channel) != -1, .failure_msg = "smq_channel_create() was not able to get descriptor");
+    STF_EXPECT(smq_channel_blocking_send(&channel, (char *)&msg, sizeof(msg), 0) == 0, .failure_msg = "smq_channel_send failed to send message");
+    STF_EXPECT(smq_channel_blocking_send(&channel, (char *)&msg, sizeof(msg), 0) == 0, .failure_msg = "smq_channel_send failed to send message");
+    STF_EXPECT(smq_channel_blocking_send(&channel, (char *)&msg, sizeof(msg), 0) == 0, .failure_msg = "smq_channel_send failed to send message");
+    STF_EXPECT(smq_channel_attributes(channel.desc).mq_curmsgs == 3, .failure_msg = "expected to have 3 messages in the channel");
+    STF_EXPECT(smq_channel_blocking_listen(&channel, (char *)&msg, sizeof(msg)) > 0);
+    STF_EXPECT(smq_channel_attributes(channel.desc).mq_curmsgs == 2, .failure_msg = "expected to have 2 messages in the channel after a single listen");
+    smq_channel_destroy(&channel);
+}
+
 int main(void)
 {
     return STF_RUN_TESTS();
