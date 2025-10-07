@@ -42,7 +42,7 @@ typedef struct
 
 typedef struct
 {
-    uint16_t clientid;
+    char clientid[37];
     uint8_t status;
     uint8_t isresponse;
 } smq_msg_header;
@@ -87,7 +87,7 @@ struct smq_server_t
 typedef struct
 {
     smq_channel channel;
-    uint16_t id;
+    char id[37];
 } smq_client;
 
 static inline int smq_channel_create(smq_channel *channel);
@@ -215,47 +215,60 @@ static inline int __smq_client_request(const smq_client *client, smq_message *re
 
 static inline int smq_client_blocking_request(const smq_client *client, smq_message *request, smq_message *response, const int priority)
 {
-    request->header.clientid = client->id;
+    memcpy(&request->header.clientid, &client->id, sizeof(client->id));
     request->header.isresponse = SMQ_STATUS_REQUEST;
-    if (smq_channel_blocking_send(&client->channel, (char *)request, sizeof(*request), priority) != 0) {
-        return -1;
-    }
-    while (response->header.isresponse != SMQ_STATUS_RESPONSE) {
-        if (smq_channel_blocking_listen(&client->channel, (char *)response, sizeof(*response)) > 0) {
-            if (response->header.isresponse == SMQ_STATUS_RESPONSE && response->header.clientid == client->id) {
-                return 0;
-            }
-            if (smq_channel_blocking_send(&client->channel, (char *)response, sizeof(*response), priority) != 0) {
-                continue;
+    if (smq_channel_blocking_send(&client->channel, (char *)request, sizeof(*request), priority) > 0) {
+        smq_channel channel = {
+            .maxmsgsize = sizeof(smq_message),
+            .maxmsgcount = 10,
+            .desc = -1,
+            .mode = 0666,
+            .oflag = O_RDWR | O_CREAT,
+            .path = "/"
+        };
+        memcpy(&channel.path[1], &client->id[0], sizeof(client->id));
+        if (smq_channel_create(&channel) == 0) {
+            if (smq_channel_blocking_listen(&channel, (char *)response, sizeof(*response)) > 0) {
+                if (response->header.isresponse == SMQ_STATUS_RESPONSE) {
+                    smq_channel_destroy(&channel);
+                    return 0;
+                }
             }
         }
     }
-    return -1;
+    return -errno;
 }
 
 static inline int smq_client_timed_request(const smq_client *client, smq_message *request, smq_message *response, const int priority, const long timeout_ms)
 {
-    request->header.clientid = client->id;
+    memcpy(&request->header.clientid, &client->id, sizeof(client->id));
     request->header.isresponse = SMQ_STATUS_REQUEST;
-    if (smq_channel_timed_send(&client->channel, (char *)request, sizeof(*request), priority, timeout_ms) != 0) {
-        return -1;
-    }
-    while (response->header.isresponse != SMQ_STATUS_RESPONSE) {
-        if (smq_channel_timed_listen(&client->channel, (char *)response, sizeof(*response), timeout_ms) > 0) {
-            if (response->header.isresponse == SMQ_STATUS_RESPONSE && response->header.clientid == client->id) {
-                return 0;
-            }
-            if (smq_channel_timed_send(&client->channel, (char *)response, sizeof(*response), priority, timeout_ms) != 0) {
-                continue;
+    if (smq_channel_timed_send(&client->channel, (char *)request, sizeof(*request), priority, timeout_ms) > 0) {
+        smq_channel channel = {
+            .maxmsgsize = sizeof(smq_message),
+            .maxmsgcount = 10,
+            .desc = -1,
+            .mode = 0666,
+            .oflag = O_RDWR | O_CREAT,
+            .path = "/"
+        };
+        memcpy(&channel.path[1], &client->id[0], sizeof(client->id));
+        if (smq_channel_create(&channel) == 0) {
+            if (smq_channel_timed_listen(&channel, (char *)response, sizeof(*response), timeout_ms) > 0) {
+                if (response->header.isresponse == SMQ_STATUS_RESPONSE) {
+                    smq_channel_destroy(&channel);
+                    return 0;
+                }
             }
         }
     }
-    return -1;
+    return -errno;
 }
 
 static inline int smq_client_create(smq_client *client, uint16_t id, const char *path)
 {
-    client->id = id;
+    (void)id;
+    uuid_t raw_id;
     client->channel = (smq_channel){
         .maxmsgsize = sizeof(smq_message),
         .maxmsgcount = 10,
@@ -265,6 +278,8 @@ static inline int smq_client_create(smq_client *client, uint16_t id, const char 
     };
 
     memcpy(&client->channel.path, path, strlen(path) + 1);
+    uuid_generate(raw_id);
+    uuid_unparse(raw_id, &client->id[0]);
     return smq_channel_create(&client->channel);
 }
 
@@ -370,24 +385,28 @@ static inline void *__smq_listener_proc(void *listener_)
             }
         }
         if (msgrecv->header.isresponse == SMQ_STATUS_REQUEST) {
+            smq_channel channel = {
+                .maxmsgsize = sizeof(smq_message),
+                .maxmsgcount = 10,
+                .desc = -1,
+                .mode = 0666,
+                .oflag = O_RDWR | O_CREAT,
+                .path = "/"
+            };
+            memcpy(&channel.path[1], &msgrecv->header.clientid, sizeof(msgrecv->header.clientid));
             listener->handler(msgrecv, msgresp);
             msgresp->header.isresponse = SMQ_STATUS_RESPONSE;
-            while ((send_res = smq_channel_timed_send(&listener->channel, (char *)msgresp, sizeof(*msgresp), 0, timeout_ms)) < 0) {
-                switch (send_res) {
-                case -ETIMEDOUT: {
-                    continue;
+
+            if (smq_channel_create(&channel) == 0) {
+                while ((send_res = smq_channel_timed_send(&channel, (char *)msgresp, sizeof(*msgresp), 0, timeout_ms)) < 0) {
+                    switch (send_res) {
+                    case -ETIMEDOUT: {
+                        continue;
+                    }
+                    }
                 }
-                }
-            }
-            memset(msgrecv, 0x00, sizeof(*msgrecv));
-            memset(msgresp, 0x00, sizeof(*msgresp));
-            continue;
-        }
-        while ((send_res = smq_channel_timed_send(&listener->channel, (char *)msgrecv, sizeof(*msgrecv), 0, timeout_ms)) < 0) {
-            switch (send_res) {
-            case -ETIMEDOUT: {
-                continue;
-            }
+                memset(msgrecv, 0x00, sizeof(*msgrecv));
+                memset(msgresp, 0x00, sizeof(*msgresp));
             }
         }
     }
@@ -479,7 +498,6 @@ static inline bool smq_server_ready(smq_server *server, long timeout_ms)
 static inline void smq_server_stop(smq_server *server)
 {
     __smq_server_modify_running_state(server, false);
-    printf("after modify running state %d\n", smq_server_is_running(server));
     if (server->listeners == NULL) return;
     if (server->listeners->next == NULL) {
         // while (__smq_server_listener_is_ready(server->listeners)) {
